@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstring>
 #include <algorithm>
+#include "alvr_server/Logger.h"
 
 #ifndef DRM_FORMAT_INVALID
 #define DRM_FORMAT_INVALID 0
@@ -266,7 +267,7 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
     m_output.imageInfo = {};
     m_output.imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     m_output.imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    m_output.imageInfo.format = m_format;
+    m_output.imageInfo.format = m_format; // TODO: check this
     m_output.imageInfo.extent.width = width;
     m_output.imageInfo.extent.height = height;
     m_output.imageInfo.extent.depth = 1;
@@ -278,6 +279,14 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
     m_output.imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     std::vector<VkDrmFormatModifierPropertiesEXT> modifierProps;
+
+    unsigned xxx_u = 0;
+    xxx_u = m_output.imageInfo.format;
+    Warn("Renderer::CreateOutput: format %u\n", xxx_u);
+    printf("Renderer::CreateOutput: format %u\n", xxx_u);
+
+    d.haveDrmModifiers = false; // FIXME making sure
+    d.haveDmaBuf = false; // FIXME making sure
 
     if (d.haveDrmModifiers) {
         VkImageDrmFormatModifierListCreateInfoEXT modifierListInfo = {};
@@ -350,6 +359,11 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
         m_output.imageInfo.tiling = VK_IMAGE_TILING_LINEAR;
         VK_CHECK(vkCreateImage(m_dev, &m_output.imageInfo, nullptr, &m_output.image));
     } else {
+        VkExternalMemoryImageCreateInfo extMemImageInfo = {};
+        extMemImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        extMemImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        m_output.imageInfo.pNext = &extMemImageInfo;
+
         m_output.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         VK_CHECK(vkCreateImage(m_dev, &m_output.imageInfo, nullptr, &m_output.image));
     }
@@ -368,14 +382,16 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
 
     VkExportMemoryAllocateInfo memory_export_info = {};
     memory_export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-    memory_export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    memory_export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    // can these be combined?
+    //memory_export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
     VkMemoryDedicatedAllocateInfo memory_dedicated_info = {};
     memory_dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
     memory_dedicated_info.image = m_output.image;
-    if (d.haveDmaBuf) {
+    //if (d.haveDmaBuf) {
         memory_dedicated_info.pNext = &memory_export_info;
-    }
+    //}
 
     VkMemoryAllocateInfo memi = {};
     memi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -383,6 +399,11 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
     memi.allocationSize = memoryReqs.memoryRequirements.size;
     memi.memoryTypeIndex = memoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memoryReqs.memoryRequirements.memoryTypeBits);
     VK_CHECK(vkAllocateMemory(m_dev, &memi, nullptr, &m_output.memory));
+    m_output.size = memoryReqs.memoryRequirements.size;
+
+    xxx_u = m_output.size;
+    Warn("Renderer::CreateOutput: size %u\n", xxx_u);
+    printf("Renderer::CreateOutput: size %u\n", xxx_u);
 
     VkBindImageMemoryInfo bimi = {};
     bimi.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;

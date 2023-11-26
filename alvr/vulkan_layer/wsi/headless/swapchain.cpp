@@ -69,19 +69,40 @@ VkResult swapchain::create_image(const VkImageCreateInfo &image_create,
                                  wsi::swapchain_image &image) {
     VkResult res = VK_SUCCESS;
     m_create_info = image_create;
+    Warn("swapchain::create_image\n");
+    printf("swapchain::create_image\n");
+    // clobbers image_create.usage
     m_create_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT
       | VK_IMAGE_USAGE_TRANSFER_DST_BIT
       | VK_IMAGE_USAGE_SAMPLED_BIT
       | VK_IMAGE_USAGE_STORAGE_BIT;
+
     res = m_device_data.disp.CreateImage(m_device, &m_create_info, nullptr, &image.image);
     if (res != VK_SUCCESS) {
         return res;
     }
+    // FIXME: now that image is created, censor the refs to local vars
     m_create_info.pNext = nullptr;
     m_create_info.pQueueFamilyIndices = nullptr;
 
     VkMemoryRequirements memory_requirements;
     m_device_data.disp.GetImageMemoryRequirements(m_device, image.image, &memory_requirements);
+
+    unsigned xxx_w = image_create.extent.width;
+    unsigned xxx_h = image_create.extent.height;
+    unsigned xxx_d = image_create.extent.depth;
+    Warn("swapchain::created image: extent: %u x %u x %u\n", xxx_w, xxx_h, xxx_d);
+    printf("swapchain::created image: extent: %u x %u x %u\n", xxx_w, xxx_h, xxx_d);
+    unsigned xxx_u = 0;
+    xxx_u = image_create.format;
+    Warn("swapchain::created image: format %u\n", xxx_u);
+    printf("swapchain::created image: format %u\n", xxx_u);
+    xxx_u = image_create.arrayLayers;
+    Warn("swapchain::created image: arrayLayers %u\n", xxx_u);
+    printf("swapchain::created image: arrayLayers %u\n", xxx_u);
+    xxx_u = image_create.sharingMode;
+    Warn("swapchain::created image: sharingMode %u\n", xxx_u);
+    printf("swapchain::created image: sharingMode %u\n", xxx_u);
 
     /* Find a memory type */
     size_t mem_type_idx = 0;
