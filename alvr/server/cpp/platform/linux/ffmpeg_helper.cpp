@@ -40,10 +40,13 @@ alvr::VkContext::VkContext(const uint8_t *deviceUUID, const std::vector<const ch
 {
   std::vector<const char*> instance_extensions = {
       VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+      VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME, // not clear if needed
+      VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME, // not clear if needed
       VK_KHR_SURFACE_EXTENSION_NAME,
   };
 
   std::vector<const char*> device_extensions = {
+      VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, // not clear if needed
       VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
       VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
       VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
@@ -289,6 +292,7 @@ alvr::VkFrame::VkFrame(
   device = vk_ctx.get_vk_device();
   avformat = vk_format_to_av_format(vk::Format(image_info.format));
 
+  // av_drmframe currently only used by VAAPI
   av_drmframe = (AVDRMFrameDescriptor*)malloc(sizeof(AVDRMFrameDescriptor));
   av_drmframe->nb_objects = 1;
   av_drmframe->objects[0].fd = drm.fd;
