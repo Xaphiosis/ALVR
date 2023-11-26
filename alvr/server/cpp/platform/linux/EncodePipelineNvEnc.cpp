@@ -3,6 +3,7 @@
 #include "alvr_server/Settings.h"
 #include "ffmpeg_helper.h"
 #include <chrono>
+#include "alvr_server/Logger.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -23,6 +24,7 @@ const char *encoder(ALVR_CODEC codec) {
 
 } // namespace
 alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
+                                               VkContext &vk_ctx,
                                                VkFrame &input_frame,
                                                VkFrameCtx &vk_frame_ctx,
                                                uint32_t width,
