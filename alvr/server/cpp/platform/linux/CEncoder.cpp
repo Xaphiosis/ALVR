@@ -200,7 +200,7 @@ void CEncoder::Run() {
 
         m_connected = true;
 
-      fprintf(stderr, "\n\nWe are initalizing Vulkan in CEncoder thread\n\n\n");
+      Info("Initalizing Vulkan in CEncoder thread\n");
 
       av_log_set_callback(av_logfn);
 
@@ -220,7 +220,7 @@ void CEncoder::Run() {
       alvr::VkFrame frame(vk_ctx, output.image, output.imageInfo, output.size, output.memory, output.drm);
       auto encode_pipeline = alvr::EncodePipeline::Create(&render, vk_ctx, frame, vk_frame_ctx, render.GetEncodingWidth(), render.GetEncodingHeight());
 
-      fprintf(stderr, "CEncoder starting to read present packets");
+      Info("CEncoder starting to read present packets\n");
       present_packet frame_info;
       while (not m_exiting) {
         read_latest(client, (char *)&frame_info, sizeof(frame_info), m_exiting);
