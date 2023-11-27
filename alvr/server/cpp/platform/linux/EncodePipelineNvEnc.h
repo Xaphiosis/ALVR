@@ -29,5 +29,7 @@ private:
 
   CUcontext *m_cuContext = nullptr;
   AVFrame *m_cudaFrame = nullptr; // destination for CUDA copy, FIXME hopefully also the source frame for the encoder
+  CUmipmappedArray m_cuSrcMipmapArray;
+  CUarray m_cuSrcArray; // FIXME this is derived from first entry in m_cuSrcMipmapArray, so might not need to be a member
 };
 }

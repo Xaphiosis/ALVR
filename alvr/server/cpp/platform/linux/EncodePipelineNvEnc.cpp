@@ -138,7 +138,7 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
 
     CUresult cu_err = CUDA_SUCCESS;
     CUcontext cu_old_ctx;
-    cu_err = cuCtxPopCurrent(&cu_old_ctx); // this can fail, we might not have a context bound to this thread
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // FIXME check
     cu_err = cuCtxPushCurrent(*m_cuContext);
     if (cu_err != CUDA_SUCCESS) {
         throw std::runtime_error("CUDA: failed to bind context to this thread.");
@@ -154,7 +154,37 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     }
     Warn("OK: cuImportExternalMemory\n");
 
-    cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context
+    // we have the external memory imported, now need to produce a CUDA array for the source frame
+
+    CUDA_ARRAY3D_DESCRIPTOR arrayDesc = {};
+    arrayDesc.Width = width;
+    arrayDesc.Height = height;
+    arrayDesc.Depth = 0; // FIXME not clear why 0 and not 1
+    arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+    arrayDesc.NumChannels = 4;
+    arrayDesc.Flags = CUDA_ARRAY3D_COLOR_ATTACHMENT;
+
+    CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapArrayDesc = {};
+    mipmapArrayDesc.arrayDesc = arrayDesc;
+    mipmapArrayDesc.numLevels = 1;
+    mipmapArrayDesc.offset = 0;
+
+    Warn("TRY: cuExternalMemoryGetMappedMipmappedArray\n");
+    if ((cu_err = cuExternalMemoryGetMappedMipmappedArray(&m_cuSrcMipmapArray,
+                    externalMem, &mipmapArrayDesc)) != CUDA_SUCCESS) {
+        const char *szErrName = NULL;
+        cuGetErrorName(cu_err, &szErrName);
+        throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
+    }
+
+    Warn("TRY: cuMipmappedArrayGetLevel\n");
+    if ((cu_err = cuMipmappedArrayGetLevel(&m_cuSrcArray, m_cuSrcMipmapArray, 0)) != CUDA_SUCCESS) {
+        const char *szErrName = NULL;
+        cuGetErrorName(cu_err, &szErrName);
+        throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
+    }
+
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context FIXME check
 
     // TODO: confirm setup for avcodec context
     // TODO: setup copy structures for CUDA copying?
