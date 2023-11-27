@@ -4,10 +4,12 @@
 #include "ffmpeg_helper.h"
 #include <chrono>
 #include "alvr_server/Logger.h"
+#include <cuda.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
+#include <libavutil/hwcontext_cuda.h>
 }
 
 namespace {
@@ -29,14 +31,52 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
                                                VkFrameCtx &vk_frame_ctx,
                                                uint32_t width,
                                                uint32_t height) {
+    int err;
     r = render;
+    const auto &settings = Settings::Instance();
+
     auto input_frame_ctx = (AVHWFramesContext *)vk_frame_ctx.ctx->data;
     assert(input_frame_ctx->sw_format == AV_PIX_FMT_BGRA);
-
-    int err;
     vk_frame = input_frame.make_av_frame(vk_frame_ctx);
 
-    const auto &settings = Settings::Instance();
+    // derive CUDA device context from Vulkan one
+    err = av_hwdevice_ctx_create_derived(&hw_ctx, AV_HWDEVICE_TYPE_CUDA,
+                                         vk_ctx.ctx, 0);
+    if (err < 0) {
+        throw alvr::AvException("Failed to derive CUDA device:", err);
+    }
+    // dig down to get the actual CUcontext we'll be using with CUDA
+    AVHWDeviceContext *hwDevContext = (AVHWDeviceContext*)(hw_ctx->data);
+    AVCUDADeviceContext *cudaDevCtx = (AVCUDADeviceContext*)(hwDevContext->hwctx);
+    CUcontext *m_cuContext = &(cudaDevCtx->cuda_ctx); // FIXME: make member, unref in destructor?
+
+    // abstract cuda buffer for use with FFMPEG functions
+    AVBufferRef *cuda_frame_ctx = av_hwframe_ctx_alloc(hw_ctx); // FIXME: make member, unref in destructor
+    if (cuda_frame_ctx == NULL) {
+        throw std::runtime_error("Failed to allocate frame context for CUDA device");
+    }
+    AVHWFramesContext* frameCtxPtr = (AVHWFramesContext*)(cuda_frame_ctx->data);
+    frameCtxPtr->width = width;
+    frameCtxPtr->height = height;
+    frameCtxPtr->format = AV_PIX_FMT_CUDA;
+    // FIXME: does nvenc really not accept BGRA? why BGRx when vulkan seems to have RGBA?
+    // why not AV_PIX_FMT_0BGR32 ?
+    frameCtxPtr->sw_format = AV_PIX_FMT_BGR0; // compatible with VK_FORMAT_R8G8B8A8_UNORM
+    frameCtxPtr->device_ref = hw_ctx;
+    frameCtxPtr->device_ctx = (AVHWDeviceContext*)hw_ctx->data;
+
+    // allocate the CUDA buffer
+    if ((err = av_hwframe_ctx_init(cuda_frame_ctx)) < 0) {
+      av_buffer_unref(&cuda_frame_ctx);
+      throw alvr::AvException("Failed to initialize frame context for CUDA device:", err);
+    }
+
+    // TODO; cast vulkan data to CUDA pointer
+    // TODO: confirm setup for avcodec context
+    // TODO: setup copy structures for CUDA copying?
+
+    // TODO: allocate hw frame
+    // res = av_hwframe_get_buffer(hw_ctx, cuda_frame, 0);
 
     auto codec_id = ALVR_CODEC(settings.m_codec);
     const char *encoder_name = encoder(codec_id);

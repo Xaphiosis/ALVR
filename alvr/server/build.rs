@@ -60,7 +60,9 @@ fn main() {
         .flag_if_supported("-isystemcpp/openvr/headers") // silences many warnings from openvr headers
         .flag_if_supported("-std=c++17")
         .include("cpp/openvr/headers")
-        .include("cpp");
+        .include("cpp")
+        .include("/usr/local/cuda/include"); // FIXME this isn't done properly, should come from
+                                             // PKGCONFIG
 
     if platform_name == "windows" {
         build
