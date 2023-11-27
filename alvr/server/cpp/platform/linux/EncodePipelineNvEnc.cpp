@@ -4,7 +4,6 @@
 #include "ffmpeg_helper.h"
 #include <chrono>
 #include "alvr_server/Logger.h"
-#include <cuda.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -25,6 +24,51 @@ const char *encoder(ALVR_CODEC codec) {
 }
 
 } // namespace
+
+/*
+#define CUDA_DRVAPI_CALL( call ) \
+    do \
+    { \
+        CUresult err__ = call; \
+        if (err__ != CUDA_SUCCESS) \
+        { \
+            const char *szErrName = NULL; \
+            cuGetErrorName(err__, &szErrName); \
+            std::ostringstream errorLog; \
+            errorLog << "CUDA driver API error " << szErrName ; \
+            throw NVENCException::makeNVENCException(errorLog.str(), NV_ENC_ERR_GENERIC, __FUNCTION__, __FILE__, __LINE__); \
+        } \
+    } \
+    while (0)
+*/
+
+int getVulkanMemoryHandle(VkDevice device,
+        VkDeviceMemory memory) {
+    // Get handle to memory of the VkImage
+
+    int fd = -1;
+    VkMemoryGetFdInfoKHR fdInfo = { };
+    fdInfo.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    fdInfo.memory = memory;
+    fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+    auto func = (PFN_vkGetMemoryFdKHR) vkGetDeviceProcAddr(device,
+            "vkGetMemoryFdKHR");
+
+    if (!func) {
+        throw std::runtime_error("Failed to locate function vkGetMemoryFdKHR\n");
+        return -1;
+    }
+
+    VkResult r = func(device, &fdInfo, &fd);
+    if (r != VK_SUCCESS) {
+        // FIXME std::runtime_error isn't printf
+        throw std::runtime_error("Failed executing vkGetMemoryFdKHR " + std::to_string(r));
+    }
+
+    return fd;
+}
+
 alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
                                                VkContext &vk_ctx,
                                                VkFrame &input_frame,
@@ -48,7 +92,7 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     // dig down to get the actual CUcontext we'll be using with CUDA
     AVHWDeviceContext *hwDevContext = (AVHWDeviceContext*)(hw_ctx->data);
     AVCUDADeviceContext *cudaDevCtx = (AVCUDADeviceContext*)(hwDevContext->hwctx);
-    CUcontext *m_cuContext = &(cudaDevCtx->cuda_ctx); // FIXME: make member, unref in destructor?
+    m_cuContext = &(cudaDevCtx->cuda_ctx); // FIXME: unref in destructor?
 
     // abstract cuda buffer for use with FFMPEG functions
     AVBufferRef *cuda_frame_ctx = av_hwframe_ctx_alloc(hw_ctx); // FIXME: make member, unref in destructor
@@ -61,22 +105,62 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     frameCtxPtr->format = AV_PIX_FMT_CUDA;
     // FIXME: does nvenc really not accept BGRA? why BGRx when vulkan seems to have RGBA?
     // why not AV_PIX_FMT_0BGR32 ?
-    frameCtxPtr->sw_format = AV_PIX_FMT_BGR0; // compatible with VK_FORMAT_R8G8B8A8_UNORM
+    frameCtxPtr->sw_format = AV_PIX_FMT_BGR0; // compatible with VK_FORMAT_R8G8B8A8_UNORM?
+    frameCtxPtr->initial_pool_size = 3; // FIXME no idea
     frameCtxPtr->device_ref = hw_ctx;
     frameCtxPtr->device_ctx = (AVHWDeviceContext*)hw_ctx->data;
 
     // allocate the CUDA buffer
+    Warn("TRY: av_hwframe_ctx_init\n");
     if ((err = av_hwframe_ctx_init(cuda_frame_ctx)) < 0) {
       av_buffer_unref(&cuda_frame_ctx);
       throw alvr::AvException("Failed to initialize frame context for CUDA device:", err);
     }
 
-    // TODO; cast vulkan data to CUDA pointer
+    // retrieve CUDA frame buffer (this is the frame we'll send to the encoder
+    // after data gets copied across from the vulkan side)
+    AVFrame *m_cudaFrame = av_frame_alloc(); // FIXME: cleanup?
+    Warn("TRY: av_hwframe_get_buffer\n");
+    if ((err = av_hwframe_get_buffer(cuda_frame_ctx, m_cudaFrame, 0)) < 0) {
+      av_buffer_unref(&cuda_frame_ctx);
+      throw alvr::AvException("Failed to get CUDA frame's buffer:", err);
+    }
+    Warn("OK: av_hwframe_get_buffer\n");
+
+    // TODO; cast vulkan data to CUDA pointer / import the memory
+    Warn("TRY: getVulkanMemoryHandle\n");
+    auto output = r->GetOutput();
+    CUDA_EXTERNAL_MEMORY_HANDLE_DESC memDesc = {};
+    memDesc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+    memDesc.handle.fd = getVulkanMemoryHandle(vk_ctx.device, output.memory);
+    memDesc.size = output.size; // this is memRequirements.size from the code creating the vkIimage, different than extent.width*extent.height*4;
+    Warn("OK: getVulkanMemoryHandle\n");
+
+    CUresult cu_err = CUDA_SUCCESS;
+    CUcontext cu_old_ctx;
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // this can fail, we might not have a context bound to this thread
+    cu_err = cuCtxPushCurrent(*m_cuContext);
+    if (cu_err != CUDA_SUCCESS) {
+        throw std::runtime_error("CUDA: failed to bind context to this thread.");
+    }
+
+    Warn("TRY: cuImportExternalMemory\n");
+    CUexternalMemory externalMem;
+    // FIXME if this works, can abstract some kind of CUDA call or at least an exception wrapper
+    if ((cu_err = cuImportExternalMemory(&externalMem, &memDesc)) != CUDA_SUCCESS) {
+        const char *szErrName = NULL;
+        cuGetErrorName(cu_err, &szErrName);
+        throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
+    }
+    Warn("OK: cuImportExternalMemory\n");
+
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context
+
     // TODO: confirm setup for avcodec context
     // TODO: setup copy structures for CUDA copying?
-
-    // TODO: allocate hw frame
-    // res = av_hwframe_get_buffer(hw_ctx, cuda_frame, 0);
+    // TODO: try switch encoder to use cuda_frame instead of hw_frame
+    // TODO: every frame, do copy
+    // TODO: if any of this works, hw_frame member can become cuda_frame
 
     auto codec_id = ALVR_CODEC(settings.m_codec);
     const char *encoder_name = encoder(codec_id);

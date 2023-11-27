@@ -2,6 +2,7 @@
 
 #include <functional>
 #include "EncodePipeline.h"
+#include <cuda.h>
 
 extern "C" struct AVBufferRef;
 extern "C" struct AVCodecContext;
@@ -25,5 +26,8 @@ private:
   AVBufferRef *hw_ctx = nullptr;
   std::unique_ptr<AVFrame, std::function<void(AVFrame*)>> vk_frame;
   AVFrame * hw_frame = nullptr;
+
+  CUcontext *m_cuContext = nullptr;
+  AVFrame *m_cudaFrame = nullptr; // destination for CUDA copy, FIXME hopefully also the source frame for the encoder
 };
 }
