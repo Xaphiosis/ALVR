@@ -119,7 +119,7 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
 
     // retrieve CUDA frame buffer (this is the frame we'll send to the encoder
     // after data gets copied across from the vulkan side)
-    AVFrame *m_cudaFrame = av_frame_alloc(); // FIXME: cleanup?
+    m_cudaFrame = av_frame_alloc(); // FIXME: cleanup?
     Warn("TRY: av_hwframe_get_buffer\n");
     if ((err = av_hwframe_get_buffer(cuda_frame_ctx, m_cudaFrame, 0)) < 0) {
       av_buffer_unref(&cuda_frame_ctx);
@@ -289,6 +289,46 @@ alvr::EncodePipelineNvEnc::~EncodePipelineNvEnc() {
 void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) {
     r->Sync();
     timestamp.cpu = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    // copy vulkan output frame data to cuda-backed frame
+    CUDA_MEMCPY2D copy;
+    copy.srcMemoryType = CU_MEMORYTYPE_ARRAY; // srcArray specifies the handle of the source data. srcHost, srcDevice and srcPitch are ignored.
+    copy.srcArray = m_cuSrcArray;
+    copy.srcXInBytes = 0;
+    copy.srcY = 0;
+    copy.dstMemoryType = CU_MEMORYTYPE_DEVICE; // dstDevice and dstPitch specify the (device) base address of the destination data and the bytes per row to apply. dstArray is ignored
+    copy.dstDevice = (CUdeviceptr)m_cudaFrame->data[0]; // copy dev ptr as it can change upon resize
+    copy.dstPitch = m_cudaFrame->linesize[0];
+    copy.dstXInBytes = 0;
+    copy.dstY = 0;
+    copy.WidthInBytes = m_cudaFrame->width * 4; // RGBA
+    copy.Height = m_cudaFrame->height;
+
+    CUresult cu_err = CUDA_SUCCESS;
+    CUcontext cu_old_ctx;
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // FIXME check
+    cu_err = cuCtxPushCurrent(*m_cuContext);
+    if (cu_err != CUDA_SUCCESS) {
+        throw std::runtime_error("CUDA: failed to bind context to this thread.");
+    }
+
+    // try perform the copy, and do nothing else for now FIXME
+
+    Info("Try to cuMemcpy2D\n");
+    printf("dstDevice = %p, dstPitch = %u, width = %u, height = %u\n",
+            copy.dstDevice, (unsigned)copy.dstPitch,
+            (unsigned)copy.WidthInBytes, (unsigned)copy.Height);
+    printf("dst accelerated: %s\n", m_cudaFrame->hw_frames_ctx ? "yes" : "no");
+    if ((cu_err = cuMemcpy2D(&copy)) != CUDA_SUCCESS) {
+        const char *szErrName = NULL;
+        cuGetErrorName(cu_err, &szErrName);
+        throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
+    }
+
+    cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context FIXME check
+
+    // ---
+
     int err = av_hwframe_transfer_data(hw_frame, vk_frame.get(), 0);
     if (err) {
         throw alvr::AvException("av_hwframe_transfer_data", err);
