@@ -1,0 +1,13 @@
+diff --git a/libavutil/hwcontext_vulkan.c b/libavutil/hwcontext_vulkan.c
+index 204b57c011..e3bd6ace9b 100644
+--- a/libavutil/hwcontext_vulkan.c
++++ b/libavutil/hwcontext_vulkan.c
+@@ -2859,7 +2859,7 @@ static int vulkan_export_to_cuda(AVHWFramesContext *hwfc,
+                 .arrayDesc = {
+                     .Depth = 0,
+                     .Format = cufmt,
+-                    .NumChannels = 1 + ((planes == 2) && i),
++                    .NumChannels = desc->comp[i].step,
+                     .Flags = 0,
+                 },
+                 .numLevels = 1,
