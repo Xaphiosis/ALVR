@@ -329,7 +329,8 @@ void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) 
 
     // ---
 
-    int err = av_hwframe_transfer_data(hw_frame, vk_frame.get(), 0);
+    /* int err = av_hwframe_transfer_data(hw_frame, vk_frame.get(), 0); */
+    int err = av_hwframe_transfer_data(hw_frame, m_cudaFrame, 0);
     if (err) {
         throw alvr::AvException("av_hwframe_transfer_data", err);
     }
