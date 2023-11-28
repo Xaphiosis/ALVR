@@ -63,6 +63,9 @@ Renderer::Renderer(const VkInstance &inst, const VkDevice &dev, const VkPhysical
     d.haveDmaBuf = checkExtension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
     d.haveDrmModifiers = checkExtension(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
 
+    d.haveDmaBuf = false;
+    d.haveDrmModifiers = false;
+
     if (!checkExtension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) {
         throw std::runtime_error("Vulkan: Required extension " VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME " not available");
     }
@@ -279,6 +282,9 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
 
     std::vector<VkDrmFormatModifierPropertiesEXT> modifierProps;
 
+    VkExternalMemoryImageCreateInfo extMemImageInfo = {};
+    extMemImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+
     if (d.haveDrmModifiers) {
         VkImageDrmFormatModifierListCreateInfoEXT modifierListInfo = {};
         modifierListInfo.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT;
@@ -335,21 +341,20 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
         modifierListInfo.drmFormatModifierCount = imageModifiers.size();
         modifierListInfo.pDrmFormatModifiers = imageModifiers.data();
 
-        VkExternalMemoryImageCreateInfo extMemImageInfo = {};
-        extMemImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
         extMemImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
         modifierListInfo.pNext = &extMemImageInfo;
 
         VK_CHECK(vkCreateImage(m_dev, &m_output.imageInfo, nullptr, &m_output.image));
     } else if (d.haveDmaBuf) {
-        VkExternalMemoryImageCreateInfo extMemImageInfo = {};
-        extMemImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
         extMemImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
         m_output.imageInfo.pNext = &extMemImageInfo;
 
         m_output.imageInfo.tiling = VK_IMAGE_TILING_LINEAR;
         VK_CHECK(vkCreateImage(m_dev, &m_output.imageInfo, nullptr, &m_output.image));
     } else {
+        extMemImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+        m_output.imageInfo.pNext = &extMemImageInfo;
+
         m_output.imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         VK_CHECK(vkCreateImage(m_dev, &m_output.imageInfo, nullptr, &m_output.image));
     }
@@ -365,17 +370,16 @@ void Renderer::CreateOutput(uint32_t width, uint32_t height)
     memoryReqsInfo.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
     memoryReqsInfo.image = m_output.image;
     vkGetImageMemoryRequirements2(m_dev, &memoryReqsInfo, &memoryReqs);
+    m_output.size = memoryReqs.memoryRequirements.size;
 
     VkExportMemoryAllocateInfo memory_export_info = {};
     memory_export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-    memory_export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    memory_export_info.handleTypes = extMemImageInfo.handleTypes;
 
     VkMemoryDedicatedAllocateInfo memory_dedicated_info = {};
     memory_dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
     memory_dedicated_info.image = m_output.image;
-    if (d.haveDmaBuf) {
-        memory_dedicated_info.pNext = &memory_export_info;
-    }
+    memory_dedicated_info.pNext = &memory_export_info;
 
     VkMemoryAllocateInfo memi = {};
     memi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
