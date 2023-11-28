@@ -95,7 +95,7 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     m_cuContext = &(cudaDevCtx->cuda_ctx); // FIXME: unref in destructor?
 
     // abstract cuda buffer for use with FFMPEG functions
-    AVBufferRef *cuda_frame_ctx = av_hwframe_ctx_alloc(hw_ctx); // FIXME: make member, unref in destructor
+    AVBufferRef *cuda_frame_ctx = av_hwframe_ctx_alloc(hw_ctx); // will become owned by encoder
     if (cuda_frame_ctx == NULL) {
         throw std::runtime_error("Failed to allocate frame context for CUDA device");
     }
@@ -186,12 +186,6 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
 
     cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context FIXME check
 
-    // TODO: confirm setup for avcodec context
-    // TODO: setup copy structures for CUDA copying?
-    // TODO: try switch encoder to use cuda_frame instead of hw_frame
-    // TODO: every frame, do copy
-    // TODO: if any of this works, hw_frame member can become cuda_frame
-
     auto codec_id = ALVR_CODEC(settings.m_codec);
     const char *encoder_name = encoder(codec_id);
     const AVCodec *codec = avcodec_find_encoder_by_name(encoder_name);
@@ -259,7 +253,9 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
      *
      * We just to ignore the alpha channel and it's done
      */
-    encoder_ctx->pix_fmt = AV_PIX_FMT_BGR0;
+    encoder_ctx->pix_fmt = AV_PIX_FMT_CUDA; // must be same as cuda_frame_ctx->format
+    // hw_frames_ctx must be set when using GPU frames as input
+    encoder_ctx->hw_frames_ctx = av_buffer_ref(cuda_frame_ctx);
     encoder_ctx->width = width;
     encoder_ctx->height = height;
     encoder_ctx->time_base = {1, (int)1e9};
@@ -314,11 +310,10 @@ void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) 
 
     // try perform the copy, and do nothing else for now FIXME
 
-    Info("Try to cuMemcpy2D\n");
-    printf("dstDevice = %p, dstPitch = %u, width = %u, height = %u\n",
-            copy.dstDevice, (unsigned)copy.dstPitch,
-            (unsigned)copy.WidthInBytes, (unsigned)copy.Height);
-    printf("dst accelerated: %s\n", m_cudaFrame->hw_frames_ctx ? "yes" : "no");
+    /* printf("dstDevice = %p, dstPitch = %u, width = %u, height = %u\n", */
+    /*         copy.dstDevice, (unsigned)copy.dstPitch, */
+    /*         (unsigned)copy.WidthInBytes, (unsigned)copy.Height); */
+    /* printf("dst accelerated: %s\n", m_cudaFrame->hw_frames_ctx ? "yes" : "no"); */
     if ((cu_err = cuMemcpy2D(&copy)) != CUDA_SUCCESS) {
         const char *szErrName = NULL;
         cuGetErrorName(cu_err, &szErrName);
@@ -327,18 +322,11 @@ void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) 
 
     cu_err = cuCtxPopCurrent(&cu_old_ctx); // restore previous thread CUDA context FIXME check
 
-    // ---
+    m_cudaFrame->pict_type = idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    m_cudaFrame->pts = targetTimestampNs;
 
-    /* int err = av_hwframe_transfer_data(hw_frame, vk_frame.get(), 0); */
-    int err = av_hwframe_transfer_data(hw_frame, m_cudaFrame, 0);
-    if (err) {
-        throw alvr::AvException("av_hwframe_transfer_data", err);
-    }
-
-    hw_frame->pict_type = idr ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
-    hw_frame->pts = targetTimestampNs;
-
-    if ((err = avcodec_send_frame(encoder_ctx, hw_frame)) < 0) {
+    int err;
+    if ((err = avcodec_send_frame(encoder_ctx, m_cudaFrame)) < 0) {
         throw alvr::AvException("avcodec_send_frame failed:", err);
     }
 }
