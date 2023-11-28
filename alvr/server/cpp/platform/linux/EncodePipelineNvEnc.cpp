@@ -106,7 +106,6 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     // FIXME: does nvenc really not accept BGRA? why BGRx when vulkan seems to have RGBA?
     // why not AV_PIX_FMT_0BGR32 ?
     frameCtxPtr->sw_format = AV_PIX_FMT_BGR0; // compatible with VK_FORMAT_R8G8B8A8_UNORM?
-    frameCtxPtr->initial_pool_size = 3; // FIXME no idea
     frameCtxPtr->device_ref = hw_ctx;
     frameCtxPtr->device_ctx = (AVHWDeviceContext*)hw_ctx->data;
 
