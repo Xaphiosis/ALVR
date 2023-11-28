@@ -25,23 +25,6 @@ const char *encoder(ALVR_CODEC codec) {
 
 } // namespace
 
-/*
-#define CUDA_DRVAPI_CALL( call ) \
-    do \
-    { \
-        CUresult err__ = call; \
-        if (err__ != CUDA_SUCCESS) \
-        { \
-            const char *szErrName = NULL; \
-            cuGetErrorName(err__, &szErrName); \
-            std::ostringstream errorLog; \
-            errorLog << "CUDA driver API error " << szErrName ; \
-            throw NVENCException::makeNVENCException(errorLog.str(), NV_ENC_ERR_GENERIC, __FUNCTION__, __FILE__, __LINE__); \
-        } \
-    } \
-    while (0)
-*/
-
 int getVulkanMemoryHandle(VkDevice device,
         VkDeviceMemory memory) {
     // Get handle to memory of the VkImage
@@ -62,7 +45,6 @@ int getVulkanMemoryHandle(VkDevice device,
 
     VkResult r = func(device, &fdInfo, &fd);
     if (r != VK_SUCCESS) {
-        // FIXME std::runtime_error isn't printf
         throw std::runtime_error("Failed executing vkGetMemoryFdKHR " + std::to_string(r));
     }
 
@@ -103,37 +85,41 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     frameCtxPtr->width = width;
     frameCtxPtr->height = height;
     frameCtxPtr->format = AV_PIX_FMT_CUDA;
-    // FIXME: does nvenc really not accept BGRA? why BGRx when vulkan seems to have RGBA?
-    // why not AV_PIX_FMT_0BGR32 ?
-    frameCtxPtr->sw_format = AV_PIX_FMT_BGR0; // compatible with VK_FORMAT_R8G8B8A8_UNORM?
+
+    /**
+     * The Vulkan hardware frame has hardware format AV_PIX_FMT_CUDA, with pixel
+     * format VK_FORMAT_R8G8B8A8_UNORM / AV_PIX_FMT_BGRA.
+     * NVEnc does not support the BGRA format, but it does support BGR0. This
+     * is compatible, since we do not care about the alpha channel:
+     *
+     * AV_PIX_FMT_BGRA - 28  ///< packed BGRA 8:8:8:8, 32bpp, BGRABGRA...
+     * AV_PIX_FMT_BGR0 - 123 ///< packed BGR 8:8:8,    32bpp, BGRXBGRX...   X=unused/undefined
+     */
+    frameCtxPtr->sw_format = AV_PIX_FMT_BGR0;
     frameCtxPtr->device_ref = hw_ctx;
     frameCtxPtr->device_ctx = (AVHWDeviceContext*)hw_ctx->data;
 
     // allocate the CUDA buffer
-    Warn("TRY: av_hwframe_ctx_init\n");
     if ((err = av_hwframe_ctx_init(cuda_frame_ctx)) < 0) {
       av_buffer_unref(&cuda_frame_ctx);
       throw alvr::AvException("Failed to initialize frame context for CUDA device:", err);
     }
 
     // retrieve CUDA frame buffer (this is the frame we'll send to the encoder
-    // after data gets copied across from the vulkan side)
-    m_cudaFrame = av_frame_alloc(); // FIXME: cleanup?
-    Warn("TRY: av_hwframe_get_buffer\n");
+    // after data gets copied across from the vulkan frame)
+    m_cudaFrame = av_frame_alloc();
     if ((err = av_hwframe_get_buffer(cuda_frame_ctx, m_cudaFrame, 0)) < 0) {
       av_buffer_unref(&cuda_frame_ctx);
       throw alvr::AvException("Failed to get CUDA frame's buffer:", err);
     }
-    Warn("OK: av_hwframe_get_buffer\n");
 
-    // TODO; cast vulkan data to CUDA pointer / import the memory
-    Warn("TRY: getVulkanMemoryHandle\n");
+    // cast vulkan data to CUDA pointer / import the memory
     auto output = r->GetOutput();
     CUDA_EXTERNAL_MEMORY_HANDLE_DESC memDesc = {};
     memDesc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
     memDesc.handle.fd = getVulkanMemoryHandle(vk_ctx.device, output.memory);
-    memDesc.size = output.size; // this is memRequirements.size from the code creating the vkIimage, different than extent.width*extent.height*4;
-    Warn("OK: getVulkanMemoryHandle\n");
+    memDesc.size = output.size; // this is memRequirements.size from the code
+                                // creating the vkIimage, different to width*height*4;
 
     CUresult cu_err = CUDA_SUCCESS;
     CUcontext cu_old_ctx;
@@ -143,7 +129,6 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
         throw std::runtime_error("CUDA: failed to bind context to this thread.");
     }
 
-    Warn("TRY: cuImportExternalMemory\n");
     CUexternalMemory externalMem;
     // FIXME if this works, can abstract some kind of CUDA call or at least an exception wrapper
     if ((cu_err = cuImportExternalMemory(&externalMem, &memDesc)) != CUDA_SUCCESS) {
@@ -151,14 +136,16 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
         cuGetErrorName(cu_err, &szErrName);
         throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
     }
-    Warn("OK: cuImportExternalMemory\n");
 
-    // we have the external memory imported, now need to produce a CUDA array for the source frame
+    // we have the external memory imported, now produce a CUDA array for the source frame
 
+    // It's a bit unclear why exactly we use a mipmapped 3D array with no
+    // depth, from which we pick out the first (and only) level, but all the
+    // Vulkan->CUDA interop examples do it this way.
     CUDA_ARRAY3D_DESCRIPTOR arrayDesc = {};
     arrayDesc.Width = width;
     arrayDesc.Height = height;
-    arrayDesc.Depth = 0; // FIXME not clear why 0 and not 1
+    arrayDesc.Depth = 0;
     arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
     arrayDesc.NumChannels = 4;
     arrayDesc.Flags = CUDA_ARRAY3D_COLOR_ATTACHMENT;
@@ -168,7 +155,6 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     mipmapArrayDesc.numLevels = 1;
     mipmapArrayDesc.offset = 0;
 
-    Warn("TRY: cuExternalMemoryGetMappedMipmappedArray\n");
     if ((cu_err = cuExternalMemoryGetMappedMipmappedArray(&m_cuSrcMipmapArray,
                     externalMem, &mipmapArrayDesc)) != CUDA_SUCCESS) {
         const char *szErrName = NULL;
@@ -176,7 +162,6 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
         throw std::runtime_error(std::string("CUDA driver API error: ") + szErrName);
     }
 
-    Warn("TRY: cuMipmappedArrayGetLevel\n");
     if ((cu_err = cuMipmappedArrayGetLevel(&m_cuSrcArray, m_cuSrcMipmapArray, 0)) != CUDA_SUCCESS) {
         const char *szErrName = NULL;
         cuGetErrorName(cu_err, &szErrName);
@@ -242,19 +227,8 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     av_opt_set_int(encoder_ctx->priv_data, "delay", 1, 0);
     av_opt_set_int(encoder_ctx->priv_data, "forced-idr", 1, 0);
 
-    /**
-     * We will recieve a frame from HW as AV_PIX_FMT_VULKAN which will converted to AV_PIX_FMT_BGRA
-     * as SW format when we get it from HW.
-     * But NVEnc support only BGR0 format and we easy can just to force it
-     * Because:
-     * AV_PIX_FMT_BGRA - 28  ///< packed BGRA 8:8:8:8, 32bpp, BGRABGRA...
-     * AV_PIX_FMT_BGR0 - 123 ///< packed BGR 8:8:8,    32bpp, BGRXBGRX...   X=unused/undefined
-     *
-     * We just to ignore the alpha channel and it's done
-     */
-    encoder_ctx->pix_fmt = AV_PIX_FMT_CUDA; // must be same as cuda_frame_ctx->format
-    // hw_frames_ctx must be set when using GPU frames as input
-    encoder_ctx->hw_frames_ctx = av_buffer_ref(cuda_frame_ctx);
+    encoder_ctx->pix_fmt = frameCtxPtr->format;
+    encoder_ctx->hw_frames_ctx = av_buffer_ref(cuda_frame_ctx); // GPU frame input
     encoder_ctx->width = width;
     encoder_ctx->height = height;
     encoder_ctx->time_base = {1, (int)1e9};
@@ -272,13 +246,11 @@ alvr::EncodePipelineNvEnc::EncodePipelineNvEnc(Renderer *render,
     if (err < 0) {
         throw alvr::AvException("Cannot open video encoder codec:", err);
     }
-
-    hw_frame = av_frame_alloc();
 }
 
 alvr::EncodePipelineNvEnc::~EncodePipelineNvEnc() {
     av_buffer_unref(&hw_ctx);
-    av_frame_free(&hw_frame);
+    av_frame_free(&m_cudaFrame);
 }
 
 void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) {
@@ -307,12 +279,6 @@ void alvr::EncodePipelineNvEnc::PushFrame(uint64_t targetTimestampNs, bool idr) 
         throw std::runtime_error("CUDA: failed to bind context to this thread.");
     }
 
-    // try perform the copy, and do nothing else for now FIXME
-
-    /* printf("dstDevice = %p, dstPitch = %u, width = %u, height = %u\n", */
-    /*         copy.dstDevice, (unsigned)copy.dstPitch, */
-    /*         (unsigned)copy.WidthInBytes, (unsigned)copy.Height); */
-    /* printf("dst accelerated: %s\n", m_cudaFrame->hw_frames_ctx ? "yes" : "no"); */
     if ((cu_err = cuMemcpy2D(&copy)) != CUDA_SUCCESS) {
         const char *szErrName = NULL;
         cuGetErrorName(cu_err, &szErrName);

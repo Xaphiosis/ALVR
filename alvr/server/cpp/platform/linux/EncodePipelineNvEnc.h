@@ -25,10 +25,9 @@ private:
   Renderer *r = nullptr;
   AVBufferRef *hw_ctx = nullptr;
   std::unique_ptr<AVFrame, std::function<void(AVFrame*)>> vk_frame;
-  AVFrame * hw_frame = nullptr;
 
   CUcontext *m_cuContext = nullptr;
-  AVFrame *m_cudaFrame = nullptr; // destination for CUDA copy, FIXME hopefully also the source frame for the encoder
+  AVFrame *m_cudaFrame = nullptr; // destination for CUDA copy, source for the encoder
   CUmipmappedArray m_cuSrcMipmapArray;
   CUarray m_cuSrcArray; // FIXME this is derived from first entry in m_cuSrcMipmapArray, so might not need to be a member
 };
